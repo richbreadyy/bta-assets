@@ -39,10 +39,13 @@ end
 -- packet -- layout must match HornNudgePlugin exactly, key included
 ------------------------------------------------------------------------------
 
+-- int32, not int: ac.StructItem has no `int`, and calling it dies at load with
+-- "attempt to call field 'int' (a nil value)". int32 is also what matches the
+-- plugin's C# `public int` fields.
 local hornNudge = ac.OnlineEvent({
   ac.StructItem.key('srpHornNudge'),
-  targetSessionId = ac.StructItem.int(),
-  roadClear       = ac.StructItem.int(),
+  targetSessionId = ac.StructItem.int32(),
+  roadClear       = ac.StructItem.int32(),
 })
 
 -- CSP 2506+ can address the server directly with target 255. Older builds
