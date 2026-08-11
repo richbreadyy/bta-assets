@@ -24,7 +24,7 @@
 local DEBUG            = true   -- HUD + verbose logging
 local REQUIRE_DOUBLE   = false  -- true = must beep/flash twice quickly
 local DOUBLE_WINDOW    = 0.85
-local COOLDOWN         = 2.0
+local COOLDOWN         = 0.8    -- 2.0 swallowed most rapid flashes as "cooling down"
 local LOOK_AHEAD       = 70
 local LANE_TOLERANCE   = 3.0
 local MIN_AHEAD        = 3.0
