@@ -21,7 +21,7 @@
   onward and CSP tries to run the string 'https:' as Lua.
 ]]
 
-local DEBUG            = true   -- HUD + verbose logging
+local DEBUG            = false  -- true = verbose text HUD; false = quiet chevron pulse
 local REQUIRE_DOUBLE   = false  -- true = must beep/flash twice quickly
 local DOUBLE_WINDOW    = 0.85
 local COOLDOWN         = 0.8    -- 2.0 swallowed most rapid flashes as "cooling down"
@@ -85,6 +85,8 @@ local lastSource   = '-'
 local trafficSeen  = 0
 local sentCount    = 0
 local nextHeartbeat = 0
+local pulseAt      = -99   -- when the HUD chevrons last fired
+local pulseOk      = false -- true = packet sent, false = nothing ahead
 
 local function say(msg)
   status, statusAt = msg, t
@@ -146,7 +148,9 @@ local function nudge()
   if not me then return end
 
   local target, dist = findCarAhead(me, sim)
+  pulseAt = t
   if not target then
+    pulseOk = false
     say(string.format('no traffic ahead (%d traffic cars nearby, %d cars total)',
       trafficSeen, sim.carsCount))
     return
@@ -163,6 +167,7 @@ local function nudge()
     say('SEND FAILED -- rate limited or messaging blocked')
   else
     sentCount = sentCount + 1
+    pulseOk = true
     say(string.format('SENT nudge #%d -> slot %d at %.0fm (%s)',
       sentCount, target.sessionID, dist,
       clear and 'clear road' or 'boxed in'))
@@ -236,28 +241,70 @@ function script.update(dt)
 end
 
 ------------------------------------------------------------------------------
--- HUD -- no fonts, no styling, nothing that can throw
+-- HUD
+--
+-- Invisible until it fires. Three chevrons sweep outward and fade in about a
+-- second, low on the left where nobody is looking through. No text: the words
+-- were only ever there to debug the script, and the log does that better.
+--
+-- Whole thing is wrapped in pcall. A missing ui.* call would otherwise throw
+-- every frame and take the HUD out silently, which is how the first version
+-- managed to look identical to "script never loaded".
 ------------------------------------------------------------------------------
 
+local PULSE = 1.1                        -- seconds the chevrons stay visible
+local drawFailed = false
+
+local function chevron(cx, cy, size, thick, col)
+  ui.drawLine(vec2(cx - size, cy - size), vec2(cx, cy), col, thick)
+  ui.drawLine(vec2(cx, cy), vec2(cx - size, cy + size), col, thick)
+end
+
+local function paint()
+  local age = t - pulseAt
+  if age > PULSE then return end
+
+  local k = 1 - age / PULSE              -- 1 -> 0
+  local fade = k * k                     -- ease out, no hard pop
+  local col = pulseOk and rgbm(0.35, 0.95, 1.0, fade)   -- cyan: sent
+                      or rgbm(1.0, 0.45, 0.25, fade)    -- amber-red: nothing there
+
+  -- Chevrons march outward as the pulse decays.
+  local slide = (1 - k) * 14
+  for n = 0, 2 do
+    local a = fade * (1 - n * 0.28)
+    if a > 0.01 then
+      local c = rgbm(col.r, col.g, col.b, a)
+      chevron(34 + n * 11 + slide, 26, 7, 2.0, c)
+    end
+  end
+
+  -- A thin trailing bar, so a single glance reads as "something fired"
+  -- rather than "is that part of the car HUD?".
+  ui.drawLine(vec2(20, 26), vec2(20, 26 - 9 * fade), rgbm(col.r, col.g, col.b, fade * 0.9), 2.0)
+  ui.drawLine(vec2(20, 26), vec2(20, 26 + 9 * fade), rgbm(col.r, col.g, col.b, fade * 0.9), 2.0)
+end
+
 function script.drawUI()
-  if not DEBUG then
-    if t - statusAt > 2.5 then return end
-    ui.beginTransparentWindow('srpHorn', vec2(40, 260), vec2(460, 60))
-    ui.textColored(status, rgbm(1, 0.86, 0.2, 1))
-    ui.endTransparentWindow()
+  if DEBUG then
+    ui.transparentWindow('srpHornDebug', vec2(30, 200), vec2(480, 150), function()
+      ui.textColored(string.format('SRP ALIVE %.0fs (CSP %d)', t, BUILD), rgbm(0.4, 1, 0.5, 1))
+      ui.text('horn:  ' .. tostring(btnHorn:boundTo()))
+      ui.text('flash: ' .. tostring(btnFlash:boundTo()))
+      ui.text(string.format('near: %d   sent: %d', trafficSeen, sentCount))
+      ui.textColored('> ' .. status, rgbm(1, 0.86, 0.2, 1))
+    end)
     return
   end
 
-  ui.beginTransparentWindow('srpHornDebug', vec2(30, 200), vec2(480, 170))
-  ui.textColored(string.format('SRP horn nudge ALIVE  %.0fs  (CSP %d)', t, BUILD),
-    rgbm(0.4, 1, 0.5, 1))
-  ui.text('horn:  ' .. tostring(btnHorn:boundTo()))
-  ui.text('flash: ' .. tostring(btnFlash:boundTo()))
-  ui.text(string.format('target: %s   traffic near: %d   sent: %d',
-    SERVER_TARGET and '255' or 'broadcast', trafficSeen, sentCount))
-  ui.text('last input: ' .. lastSource)
-  ui.textColored('> ' .. status, rgbm(1, 0.86, 0.2, 1))
-  ui.endTransparentWindow()
+  if drawFailed or t - pulseAt > PULSE then return end
+  local ok, err = pcall(function()
+    ui.transparentWindow('srpHornPulse', vec2(26, 300), vec2(120, 52), true, paint)
+  end)
+  if not ok then
+    drawFailed = true                    -- once, then stay out of the way
+    log('HUD disabled after draw error: %s', tostring(err))
+  end
 end
 
 ------------------------------------------------------------------------------
