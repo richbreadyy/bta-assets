@@ -48,11 +48,10 @@ local hornNudge = ac.OnlineEvent({
   roadClear       = ac.StructItem.int32(),
 })
 
--- CSP 2506+ can address the server directly with target 255. Older builds
--- ignore the argument, so there we broadcast and let AssettoServer pick it up
--- off the relay.
+-- Broadcast through the relay so AssettoServer receives the event on both
+-- 0.0.54 and 0.0.55. Direct target 255 is not delivered on this host's path.
 local BUILD = ac.getPatchVersionCode()
-local SERVER_TARGET = BUILD >= 2506 and 255 or nil
+local SERVER_TARGET = nil
 
 ------------------------------------------------------------------------------
 -- input -- read the player's real bindings, not car-state fields that vary
