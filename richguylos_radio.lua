@@ -139,6 +139,36 @@ do
   end
 end
 
+-- Pin the two headline frequencies to their real live broadcasts. Prefer MP3
+-- for HOT 97 because it starts more reliably in Windows Media Foundation than
+-- the AAC+ Shoutcast variant. POWER 105.1 is supplied live by iHeart/Revma.
+-- These public redirects select a healthy edge server for each joining player.
+local LIVE_STREAMS = {
+  power1051 = {
+    'https://stream.revma.ihrhls.com/zc1481'
+  },
+  hot97 = {
+    'https://playerservices.streamtheworld.com/api/livestream-redirect/WQHTFM.mp3',
+    'https://playerservices.streamtheworld.com/api/livestream-redirect/WQHTFM_SC',
+    'https://playerservices.streamtheworld.com/api/livestream-redirect/WQHTFMAAC_SC'
+  }
+}
+for _, station in ipairs(stations) do
+  if LIVE_STREAMS[station.id] then
+    station.urls = LIVE_STREAMS[station.id]
+  end
+end
+
+-- Start every joining player on HOT 97's MP3 feed. MP3 avoids the AAC decoder
+-- failure reported by CSP as `MMF error: 4` on affected Windows installations.
+local DEFAULT_STATION = 1
+for index, station in ipairs(stations) do
+  if station.id == 'hot97' then
+    DEFAULT_STATION = index
+    break
+  end
+end
+
 -- ------------------------------------------------------------------
 --  Radio
 -- ------------------------------------------------------------------
@@ -149,7 +179,7 @@ local CONNECT_TIMEOUT = 9
 -- station can't sit there reconnecting forever in the background.
 local MAX_PASSES = 3
 
-local selected = 1
+local selected = DEFAULT_STATION
 local urlIndex = 1
 local passes = 0
 local volume = 0.55
@@ -161,8 +191,10 @@ local statusDetail = licensed and 'Loading CSP native audio'
   or 'This server is not authorised to run this radio'
 local statusTimer = 0
 local sinceTune = 0
-local toastTimer = 1.5
 local toastShown = false
+local autoStartTimer = 0
+local mediaCheckStarted = false
+local AUTO_START_DELAY = 1.0
 
 local function currentStation()
   return stations[selected]
@@ -189,7 +221,10 @@ local function tune(index, urlIdx)
   end
 
   if not player then
-    player = ui.MediaPlayer(nil, { rawOutput = false, use3D = false })
+    -- Send radio audio straight to the Windows default device. Routing a live
+    -- Media Foundation stream through AC/FMOD can report playback while staying
+    -- silent on some CSP/audio-device combinations.
+    player = ui.MediaPlayer(nil, { rawOutput = true, use3D = false })
   end
 
   powered = true
@@ -264,7 +299,7 @@ local function radioUI()
   end
 
   ui.separator()
-  ui.text('AUDIO OUTPUT // CSP NATIVE')
+  ui.text('AUDIO OUTPUT // WINDOWS DIRECT')
   local nextVolume = ui.slider('##rglRadioVolume', volume * 100, 0, 100, '%.0f%%') / 100
   if math.abs(nextVolume - volume) > 0.001 then
     volume = nextVolume
@@ -300,33 +335,42 @@ ui.registerOnlineExtra(
   vec2(390, 430)
 )
 
-if licensed then
-  ui.MediaPlayer.supportedAsync(function (supported)
-    if supported then
-      tune(selected, 1)
-    else
-      status = 'UNAVAILABLE'
-      statusDetail = 'CSP native media playback is not supported on this PC'
-      powered = false
-    end
-  end)
-end
-
 function script.update(dt)
   if not licensed then return end
 
   statusTimer = statusTimer + dt
   sinceTune = sinceTune + dt
-  toastTimer = toastTimer - dt
 
-  if not toastShown and toastTimer <= 0 then
-    toastShown = true
-    ui.toast(ui.Icons.Radio, 'RichGuyLos Radio Station is playing. Open Chat > lightbulb for stations and volume.')
+  -- Start for every joining player from the always-running online-script update
+  -- loop. No radio window interaction is required.
+  if not mediaCheckStarted then
+    autoStartTimer = autoStartTimer + dt
+    if autoStartTimer >= AUTO_START_DELAY then
+      mediaCheckStarted = true
+      status = 'STARTING'
+      statusDetail = 'Starting radio automatically'
+      ui.MediaPlayer.supportedAsync(function (supported)
+        if supported then
+          passes = 0
+          tune(selected, 1)
+        else
+          status = 'UNAVAILABLE'
+          statusDetail = 'CSP native media playback is not supported on this PC'
+          powered = false
+        end
+      end)
+    end
   end
 
   if not player or not powered then return end
 
-  if player:playing() then
+  -- `playing()` only describes the requested playback state. Require a decoded
+  -- audio track as well so a failed stream cannot be shown as PLAYING.
+  if player:playing() and player:hasAudio() then
+    if not toastShown then
+      toastShown = true
+      ui.toast(ui.Icons.Radio, 'RichGuyLos Radio Station started automatically. Open Chat > lightbulb for controls.')
+    end
     -- Audio is flowing, so a stream that dies hours from now still gets a full
     -- set of retries rather than inheriting an old failure count.
     passes = 0
