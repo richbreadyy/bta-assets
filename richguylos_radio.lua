@@ -193,8 +193,8 @@ local statusTimer = 0
 local sinceTune = 0
 local toastShown = false
 local autoStartTimer = 0
-local mediaCheckStarted = false
-local AUTO_START_DELAY = 1.0
+local autoStartTriggered = false
+local AUTO_START_DELAY = 0.25
 
 local function currentStation()
   return stations[selected]
@@ -212,13 +212,6 @@ local function tune(index, urlIdx)
   selected = ((index - 1) % #stations) + 1
   local station = currentStation()
   urlIndex = urlIdx or 1
-
-  if not ui.MediaPlayer.supported() then
-    status = 'UNAVAILABLE'
-    statusDetail = 'CSP native media playback is not supported on this PC'
-    powered = false
-    return
-  end
 
   if not player then
     -- Send radio audio straight to the Windows default device. Routing a live
@@ -341,24 +334,18 @@ function script.update(dt)
   statusTimer = statusTimer + dt
   sinceTune = sinceTune + dt
 
-  -- Start for every joining player from the always-running online-script update
-  -- loop. No radio window interaction is required.
-  if not mediaCheckStarted then
+  -- Start for every joining player directly from the always-running online
+  -- script update loop. MediaPlayer queues playback while Windows Media
+  -- Foundation initializes, so an async capability callback cannot stall join
+  -- autoplay before the player is even created.
+  if not autoStartTriggered then
     autoStartTimer = autoStartTimer + dt
     if autoStartTimer >= AUTO_START_DELAY then
-      mediaCheckStarted = true
+      autoStartTriggered = true
+      passes = 0
       status = 'STARTING'
       statusDetail = 'Starting radio automatically'
-      ui.MediaPlayer.supportedAsync(function (supported)
-        if supported then
-          passes = 0
-          tune(selected, 1)
-        else
-          status = 'UNAVAILABLE'
-          statusDetail = 'CSP native media playback is not supported on this PC'
-          powered = false
-        end
-      end)
+      tune(selected, 1)
     end
   end
 
