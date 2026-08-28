@@ -13,18 +13,19 @@
   Companion piece: PursuitPlugin (server-side) drives AI police cars using the
   same threshold. The two do not talk to each other on purpose — each works
   alone, so neither can break the other. If you change SPEED_LIMIT_MPH here,
-  change SpeedThresholdMph in plugin_pursuit_cfg.yml to match.
+  change SpeedThresholdMph in the !PursuitConfiguration document of
+  extra_cfg.yml to match.
 ]]
 
 ----------------------------------------------------------------------------
 -- TUNING
 ----------------------------------------------------------------------------
 
-local SPEED_LIMIT_MPH  = 90    -- cross this and you are wanted
-local CLEAR_MARGIN_MPH = 10    -- drop below (limit - this) to start cooling off
-local TRIGGER_HOLD     = 0.6   -- seconds over the limit before it actually flags
-local ESCAPE_SECONDS   = 12    -- seconds clean + clear of police to lose them
-local ESCAPE_DISTANCE  = 350   -- metres: nearest cop must be beyond this to count as clean
+local SPEED_LIMIT_MPH  = 80    -- cross this and you are wanted
+local CLEAR_MARGIN_MPH = 25    -- drop below (limit - this) to start cooling off
+local TRIGGER_HOLD     = 0.75   -- seconds over the limit before it actually flags
+local ESCAPE_SECONDS   = 25    -- seconds clean + clear of police to lose them
+local ESCAPE_DISTANCE  = 600   -- metres: nearest cop must be beyond this to count as clean
 local RADAR_RANGE      = 800   -- metres: how far a cop's radar reads other cars
 local BUST_DISTANCE    = 12    -- metres
 local BUST_SPEED_MPH   = 15    -- both cars under this...
