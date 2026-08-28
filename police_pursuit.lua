@@ -24,8 +24,8 @@
 local SPEED_LIMIT_MPH  = 80    -- cross this and you are wanted
 local CLEAR_MARGIN_MPH = 25    -- drop below (limit - this) to start cooling off
 local TRIGGER_HOLD     = 0.75   -- seconds over the limit before it actually flags
-local ESCAPE_SECONDS   = 25    -- seconds clean + clear of police to lose them
-local ESCAPE_DISTANCE  = 600   -- metres: nearest cop must be beyond this to count as clean
+local ESCAPE_SECONDS   = 12    -- matches the server pursuit cooldown
+local ESCAPE_DISTANCE  = 600   -- radar/display reference; does not block HUD clearing
 local RADAR_RANGE      = 800   -- metres: how far a cop's radar reads other cars
 local BUST_DISTANCE    = 12    -- metres
 local BUST_SPEED_MPH   = 15    -- both cars under this...
@@ -202,8 +202,9 @@ local function updateCivilian(dt)
     heat = math.min(5, heat + dt * (0.12 + overBy * 0.12))
     cleanTimer = 0
   else
-    local copClear = (nearestCop == nil) or (nearestCop.dist > ESCAPE_DISTANCE)
-    if me.speedKmh < CLEAR_KMH and copClear then
+    -- AI units return to normal traffic after a pursuit and can remain nearby.
+    -- Requiring every police car to be far away left WANTED stuck indefinitely.
+    if me.speedKmh < CLEAR_KMH then
       cleanTimer = cleanTimer + dt
       if cleanTimer >= ESCAPE_SECONDS then
         wanted = false
@@ -222,7 +223,7 @@ local function updateCivilian(dt)
      and me.speedKmh < BUST_KMH and nearestCop.speed < BUST_SPEED_MPH then
     bustTimer = bustTimer + dt
     if bustTimer >= BUST_SECONDS and not busted then
-      busted = true
+      busted = false
       wanted = false
       overTimer, cleanTimer, heat, bustTimer = 0, 0, 0, 0
       ac.setMessage('BUSTED', string.format('%s pulled you over at %d mph.',
@@ -244,7 +245,7 @@ local WHITE = rgbm(1, 1, 1, 1)
 local DIM   = rgbm(0.75, 0.78, 0.82, 1)
 
 local function drawCivilianHud()
-  if not wanted and not busted then return end
+  if not wanted then return end
 
   -- ui.windowSize() inside a draw callback is the UI canvas, which is what CSP's
   -- own HUD scripts use. sim.windowWidth is raw pixels and is wrong under UI scaling.
@@ -326,8 +327,8 @@ local function settingsUI()
     ui.textWrapped('Horn is wired to the siren on this car (HORN_AS_SIREN). Lightbar is CSP Extra Option A.')
   else
     ui.textWrapped(string.format(
-      'Cross %d mph and you are flagged. To lose it: get under %d mph with no police within %d m for %d seconds.',
-      SPEED_LIMIT_MPH, SPEED_LIMIT_MPH - CLEAR_MARGIN_MPH, ESCAPE_DISTANCE, ESCAPE_SECONDS))
+      'Cross %d mph and you are flagged. To lose it: stay under %d mph for %d seconds.',
+      SPEED_LIMIT_MPH, SPEED_LIMIT_MPH - CLEAR_MARGIN_MPH, ESCAPE_SECONDS))
   end
 
   ui.separator()
