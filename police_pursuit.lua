@@ -10,11 +10,19 @@
   Entirely client-side. No plugin, no DLL, no server restart to retune — edit
   this file and players pick it up on their next join.
 
-  Companion piece: PursuitPlugin (server-side) drives AI police cars using the
-  same threshold. The two do not talk to each other on purpose — each works
-  alone, so neither can break the other. If you change SPEED_LIMIT_MPH here,
-  change SpeedThresholdMph in the !PursuitConfiguration document of
-  extra_cfg.yml to match.
+  Companion piece: PolicePursuitPlugin v1.7.0 (server-side) drives the AI police
+  cars using the same threshold. The two still work standalone — the HUD flags
+  you on its own speed reading, so it cannot be broken by a server-side change.
+  If you change SPEED_LIMIT_MPH here, change SpeedLimitMph in the
+  !PolicePursuitConfiguration document of extra_cfg.yml to match.
+
+  What it DOES take from the server, when offered: the plugin's dispatch chatter
+  arrives as ordinary chat lines. Rather than let them scroll across the top of
+  the screen, this script swallows them (ac.onChatMessage returning true stops a
+  message reaching the chat apps) and prints them inside the WANTED panel, along
+  with the plugin's authoritative wanted level, unit count and AIR-1 status.
+  If the plugin is absent or silent the panel just falls back to its own
+  reading, exactly as before.
 ]]
 
 ----------------------------------------------------------------------------
@@ -31,6 +39,8 @@ local BUST_DISTANCE    = 12    -- metres
 local BUST_SPEED_MPH   = 15    -- both cars under this...
 local BUST_SECONDS     = 3.0   -- ...for this long, next to each other, = busted
 local SCAN_INTERVAL    = 0.1   -- seconds between full car sweeps
+local DISPATCH_HOLD    = 9     -- seconds a dispatch line stays on the HUD
+local SERVER_STALE     = 20    -- seconds before server status is treated as gone
 
 -- A car counts as police if its folder id matches any of these Lua patterns.
 local POLICE_PATTERNS = {
@@ -69,9 +79,67 @@ local nearestCop   = nil      -- { dist = number, name = string }
 -- cop state
 local targets      = {}       -- sorted by distance
 
+-- server-fed state, all optional. srvSeenAt is the clock reading of the last
+-- status line; everything else is only trusted while that is fresh.
+local dispatchText = nil
+local dispatchAt   = -1000
+local srvSeenAt    = -1000
+local srvWanted    = 0
+local srvUnits     = 0
+local srvTaps      = 0
+local srvState     = nil      -- PURSUIT / AGGRESSIVE / FALLBACK ns
+local srvPit       = nil      -- PIT 02:31 / PIT AUTH / PIT ACTIVE
+local srvAir       = nil      -- ACTIVE / DISPATCH
+
 ----------------------------------------------------------------------------
 -- helpers
 ----------------------------------------------------------------------------
+
+-- The plugin talks to the player over ordinary chat. Swallow anything that is
+-- clearly its own traffic and route it into the HUD instead. Returning true is
+-- what stops the line reaching the chat apps at the top of the screen.
+local function consumePoliceChat(message)
+  if type(message) ~= 'string' then return false end
+
+  -- Some chat paths hand the line over with the sender still prefixed.
+  local body = message:match('^SERVER:%s*(.+)$') or message
+
+  local level, taps = body:match('^%[WANTED (%d+)/5%]%s*TAPS%s*(%d+)')
+  if level then
+    srvSeenAt = os.clock()
+    srvWanted = tonumber(level) or 0
+    srvTaps   = tonumber(taps) or 0
+    srvUnits  = tonumber(body:match('|%s*(%d+)%s*UNITS') or '') or 0
+    srvState  = body:match('|%s*(PURSUIT)%s*|') or body:match('|%s*(AGGRESSIVE)%s*|')
+                or body:match('|%s*(FALLBACK%s*%d+s)%s*|')
+    srvPit    = body:match('|%s*(PIT[^|]-)%s*|') or body:match('|%s*(PIT[^|]-)$')
+    srvAir    = body:match('AIR%-1%s+(%u+)')
+    return true
+  end
+
+  if body:match('^%[POLICE%]') or body:match('^%[AIR%-1%]') or body:match('^%[DISPATCH%]') then
+    -- Strip the leading [POLICE] / [AIR-1] / [DISPATCH] tag; the panel is
+    -- already unmistakably a police readout. Note the class needs its own
+    -- opening bracket: %[ is a literal '[', it does not open one.
+    dispatchText = body:gsub('^%[[%u%-%d]+%]%s*', '')
+    dispatchAt   = os.clock()
+    srvSeenAt    = os.clock()
+    return true
+  end
+
+  return false
+end
+
+ac.onChatMessage(function(message, senderCarIndex)
+  -- Only ever swallow server messages; never touch what another player typed.
+  if senderCarIndex ~= nil and senderCarIndex >= 0 then return false end
+  local ok, handled = pcall(consumePoliceChat, message)
+  return ok and handled or false
+end)
+
+local function serverActive()
+  return os.clock() - srvSeenAt < SERVER_STALE
+end
 
 local function isPoliceModel(id)
   if not id then return false end
@@ -244,13 +312,36 @@ local BLUE  = rgbm(0.20, 0.55, 1.00, 1)
 local WHITE = rgbm(1, 1, 1, 1)
 local DIM   = rgbm(0.75, 0.78, 0.82, 1)
 
+-- Trim to fit a pixel width, ellipsising rather than wrapping. Keeps the panel
+-- a fixed shape no matter how long a dispatch line is.
+local function fitText(text, size, maxWidth)
+  if ui.measureDWriteText(text, size).x <= maxWidth then return text end
+  local lo, hi = 1, #text
+  while lo < hi do
+    local mid = math.floor((lo + hi + 1) / 2)
+    if ui.measureDWriteText(text:sub(1, mid) .. '...', size).x <= maxWidth then
+      lo = mid
+    else
+      hi = mid - 1
+    end
+  end
+  return text:sub(1, lo) .. '...'
+end
+
 local function drawCivilianHud()
-  if not wanted then return end
+  -- Show while our own reading says wanted, and also while the plugin is
+  -- reporting a live pursuit - the two can disagree at the edges.
+  if not wanted and not serverActive() then return end
+
+  local showDispatch = dispatchText ~= nil and os.clock() - dispatchAt < DISPATCH_HOLD
+  local showStatus   = serverActive()
 
   -- ui.windowSize() inside a draw callback is the UI canvas, which is what CSP's
   -- own HUD scripts use. sim.windowWidth is raw pixels and is wrong under UI scaling.
   local screen = ui.windowSize()
-  local w, h = 300, 84
+  local w, h = 382, 84
+  if showStatus then h = h + 20 end
+  if showDispatch then h = h + 22 end
   local pos = vec2(screen.x / 2 - w / 2, 74)
 
   ui.transparentWindow('pursuitWanted', pos, vec2(w, h), true, false, function()
@@ -261,8 +352,11 @@ local function drawCivilianHud()
 
     ui.dwriteDrawText('WANTED', 26, vec2(12, 12), flash and RED or WHITE)
 
-    local stars = string.rep('*', math.max(1, math.floor(heat))) ..
-                  string.rep('-', 5 - math.max(1, math.floor(heat)))
+    -- The plugin's wanted level wins while it is talking to us; our own heat
+    -- estimate is the fallback when it is not.
+    local level = showStatus and srvWanted or math.floor(heat)
+    level = math.max(1, math.min(5, level))
+    local stars = string.rep('*', level) .. string.rep('-', 5 - level)
     ui.dwriteDrawText(stars, 22, vec2(w - 96, 13), RED)
 
     if nearestCop then
@@ -272,11 +366,39 @@ local function drawCivilianHud()
       ui.dwriteDrawText('NO UNITS IN RANGE', 15, vec2(12, 44), DIM)
     end
 
+    local y = 66
+
+    if showStatus then
+      local bits = {}
+      if srvUnits > 0 then bits[#bits + 1] = string.format('%d UNITS', srvUnits) end
+      if srvState then bits[#bits + 1] = srvState end
+      if srvPit then bits[#bits + 1] = srvPit end
+      if srvTaps > 0 then bits[#bits + 1] = string.format('TAPS %d', srvTaps) end
+      local line = table.concat(bits, '   ')
+      if line ~= '' then
+        ui.dwriteDrawText(fitText(line, 13, w - 116), 13, vec2(12, y),
+          srvState == 'AGGRESSIVE' and RED or DIM)
+      end
+      if srvAir then
+        ui.dwriteDrawText('AIR-1 ' .. srvAir, 13, vec2(w - 96, y),
+          srvAir == 'ACTIVE' and RED or BLUE)
+      end
+      y = y + 20
+    end
+
+    if showDispatch then
+      local age = os.clock() - dispatchAt
+      local fade = math.min(1, (DISPATCH_HOLD - age) / 1.5)
+      ui.dwriteDrawText(fitText(dispatchText, 14, w - 24), 14, vec2(12, y),
+        rgbm(1, 0.86, 0.32, fade))
+      y = y + 22
+    end
+
     if cleanTimer > 0 then
       local frac = math.min(1, cleanTimer / ESCAPE_SECONDS)
-      ui.drawRectFilled(vec2(12, 66), vec2(12 + (w - 24) * frac, 72), BLUE)
+      ui.drawRectFilled(vec2(12, y), vec2(12 + (w - 24) * frac, y + 6), BLUE)
       ui.dwriteDrawText(string.format('LOSING THEM  %.0fs', ESCAPE_SECONDS - cleanTimer),
-        13, vec2(w - 124, 62), BLUE)
+        13, vec2(w - 124, y - 4), BLUE)
     end
   end)
 end
