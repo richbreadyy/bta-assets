@@ -291,7 +291,12 @@ local function updateCivilian(dt)
      and me.speedKmh < BUST_KMH and nearestCop.speed < BUST_SPEED_MPH then
     bustTimer = bustTimer + dt
     if bustTimer >= BUST_SECONDS and not busted then
-      busted = false
+      -- Latch it, so the flag means what its name says. Nothing re-fires today
+      -- either way: this branch clears `wanted`, and the early return above
+      -- makes the whole block unreachable until you are wanted again. But left
+      -- as false the guard on the line above is dead, and would stay dead if
+      -- that return ever goes or the bust path grows follow-up state.
+      busted = true
       wanted = false
       overTimer, cleanTimer, heat, bustTimer = 0, 0, 0, 0
       ac.setMessage('BUSTED', string.format('%s pulled you over at %d mph.',
